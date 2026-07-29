@@ -75,9 +75,11 @@ def list_documents(
     db: Session = Depends(get_db),
 ):
     return db.query(models.Document).filter(models.Document.owner_id == current_user.id).all()
+
+
 from app.services.embeddings import embed_query
 from app.services.vector_store import query_chunks
-from app.services.llm import generate_answer
+from app.services.llm import generate_answer, reformulate_query
 
 
 @router.post("/{document_id}/chat", response_model=schemas.ChatResponse)
@@ -96,14 +98,53 @@ def chat_with_document(
     if doc.status != "ready":
         raise HTTPException(status_code=400, detail=f"Document is not ready (status: {doc.status})")
 
-    query_embedding = embed_query(request.question)
-    results = query_chunks(document_id, query_embedding, top_k=4)
+    history_dicts = [{"role": m.role, "content": m.content} for m in request.history]
+    search_query = reformulate_query(request.question, history_dicts)
 
+    query_embedding = embed_query(search_query)
+    results = query_chunks(document_id, query_embedding, top_k=4)
     chunks = [
         {"text": text, "page": meta["page"]}
         for text, meta in zip(results["documents"][0], results["metadatas"][0])
     ]
 
-    answer = generate_answer(request.question, chunks)
+    answer = generate_answer(request.question, chunks, history_dicts)
 
     return {"answer": answer, "sources": chunks}
+import json
+from fastapi.responses import StreamingResponse
+from app.services.llm import generate_answer_stream
+
+
+@router.post("/{document_id}/chat/stream")
+def chat_with_document_stream(
+    document_id: str,
+    request: schemas.ChatRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    doc = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.owner_id == current_user.id
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if doc.status != "ready":
+        raise HTTPException(status_code=400, detail=f"Document is not ready (status: {doc.status})")
+
+    history_dicts = [{"role": m.role, "content": m.content} for m in request.history]
+    search_query = reformulate_query(request.question, history_dicts)
+
+    query_embedding = embed_query(search_query)
+    results = query_chunks(document_id, query_embedding, top_k=4)
+    chunks = [
+        {"text": text, "page": meta["page"]}
+        for text, meta in zip(results["documents"][0], results["metadatas"][0])
+    ]
+
+    def stream():
+        yield f"@@SOURCES@@{json.dumps(chunks)}@@ENDSOURCES@@"
+        for text_piece in generate_answer_stream(request.question, chunks, history_dicts):
+            yield text_piece
+
+    return StreamingResponse(stream(), media_type="text/plain")

@@ -31,8 +31,13 @@ class DocumentOut(BaseModel):
     class Config:
         from_attributes = True
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
 class ChatRequest(BaseModel):
     question: str
+    history: list[ChatMessage] = []
 
 class SourceChunk(BaseModel):
     text: str
