@@ -1,4 +1,4 @@
-import client from "./client";
+import client, { API_URL } from "./client";
 
 export const listDocuments = () => client.get("/documents/");
 
@@ -18,19 +18,17 @@ export const uploadDocument = (file, onProgress) => {
 
 export const chatWithDocument = (documentId, question, history = []) =>
   client.post(`/documents/${documentId}/chat`, { question, history });
+
 export const chatWithDocumentStream = async (documentId, question, history, onSources, onToken) => {
   const token = localStorage.getItem("access_token");
-  const response = await fetch(
-    `http://127.0.0.1:8000/documents/${documentId}/chat/stream`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ question, history }),
-    }
-  );
+  const response = await fetch(`${API_URL}/documents/${documentId}/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ question, history }),
+  });
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));

@@ -1,6 +1,6 @@
 import os
 import shutil
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -10,21 +10,29 @@ from app.services.pdf_processor import extract_text_with_pages
 from app.services.chunker import chunk_pages
 from app.services.embeddings import embed_texts
 from app.services.vector_store import store_chunks
+from app.limiter import limiter
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+
 
 @router.post("/upload", response_model=schemas.DocumentOut)
+@limiter.limit("5/minute")
 def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF files are accepted.")
 
     new_doc = models.Document(
         owner_id=current_user.id,
@@ -37,8 +45,13 @@ def upload_document(
 
     temp_path = os.path.join(UPLOAD_DIR, f"{new_doc.id}.pdf")
     try:
+        size = 0
         with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_FILE_SIZE_BYTES:
+                    raise HTTPException(status_code=400, detail="File too large. Maximum size is 20MB.")
+                buffer.write(chunk)
 
         pages = extract_text_with_pages(temp_path)
         if not pages:
@@ -57,6 +70,8 @@ def upload_document(
         db.refresh(new_doc)
 
     except HTTPException:
+        new_doc.status = "failed"
+        db.commit()
         raise
     except Exception as e:
         new_doc.status = "failed"
@@ -79,13 +94,15 @@ def list_documents(
 
 from app.services.embeddings import embed_query
 from app.services.vector_store import query_chunks
-from app.services.llm import generate_answer, reformulate_query
+from app.services.llm import generate_answer, reformulate_query, generate_answer_stream
 
 
 @router.post("/{document_id}/chat", response_model=schemas.ChatResponse)
+@limiter.limit("10/minute")
 def chat_with_document(
+    request: Request,
     document_id: str,
-    request: schemas.ChatRequest,
+    request_body: schemas.ChatRequest,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -98,8 +115,8 @@ def chat_with_document(
     if doc.status != "ready":
         raise HTTPException(status_code=400, detail=f"Document is not ready (status: {doc.status})")
 
-    history_dicts = [{"role": m.role, "content": m.content} for m in request.history]
-    search_query = reformulate_query(request.question, history_dicts)
+    history_dicts = [{"role": m.role, "content": m.content} for m in request_body.history]
+    search_query = reformulate_query(request_body.question, history_dicts)
 
     query_embedding = embed_query(search_query)
     results = query_chunks(document_id, query_embedding, top_k=4)
@@ -108,18 +125,21 @@ def chat_with_document(
         for text, meta in zip(results["documents"][0], results["metadatas"][0])
     ]
 
-    answer = generate_answer(request.question, chunks, history_dicts)
+    answer = generate_answer(request_body.question, chunks, history_dicts)
 
     return {"answer": answer, "sources": chunks}
+
+
 import json
 from fastapi.responses import StreamingResponse
-from app.services.llm import generate_answer_stream
 
 
 @router.post("/{document_id}/chat/stream")
+@limiter.limit("10/minute")
 def chat_with_document_stream(
+    request: Request,
     document_id: str,
-    request: schemas.ChatRequest,
+    request_body: schemas.ChatRequest,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -132,8 +152,8 @@ def chat_with_document_stream(
     if doc.status != "ready":
         raise HTTPException(status_code=400, detail=f"Document is not ready (status: {doc.status})")
 
-    history_dicts = [{"role": m.role, "content": m.content} for m in request.history]
-    search_query = reformulate_query(request.question, history_dicts)
+    history_dicts = [{"role": m.role, "content": m.content} for m in request_body.history]
+    search_query = reformulate_query(request_body.question, history_dicts)
 
     query_embedding = embed_query(search_query)
     results = query_chunks(document_id, query_embedding, top_k=4)
@@ -144,7 +164,7 @@ def chat_with_document_stream(
 
     def stream():
         yield f"@@SOURCES@@{json.dumps(chunks)}@@ENDSOURCES@@"
-        for text_piece in generate_answer_stream(request.question, chunks, history_dicts):
+        for text_piece in generate_answer_stream(request_body.question, chunks, history_dicts):
             yield text_piece
 
     return StreamingResponse(stream(), media_type="text/plain")

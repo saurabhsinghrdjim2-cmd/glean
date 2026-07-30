@@ -1,13 +1,14 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
+from typing import Literal
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8, max_length=72)
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8, max_length=72)
 
 class UserOut(BaseModel):
     id: str
@@ -32,12 +33,12 @@ class DocumentOut(BaseModel):
         from_attributes = True
 
 class ChatMessage(BaseModel):
-    role: str
-    content: str
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=5000)
 
 class ChatRequest(BaseModel):
-    question: str
-    history: list[ChatMessage] = []
+    question: str = Field(min_length=1, max_length=2000)
+    history: list[ChatMessage] = Field(default=[], max_length=20)
 
 class SourceChunk(BaseModel):
     text: str
