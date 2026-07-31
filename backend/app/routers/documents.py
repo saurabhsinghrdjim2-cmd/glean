@@ -1,5 +1,6 @@
 import os
 import shutil
+import json
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -92,6 +93,35 @@ def list_documents(
     return db.query(models.Document).filter(models.Document.owner_id == current_user.id).all()
 
 
+@router.get("/{document_id}/messages", response_model=list[schemas.MessageOut])
+def get_messages(
+    document_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    doc = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.owner_id == current_user.id
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    messages = db.query(models.Message).filter(
+        models.Message.document_id == document_id,
+        models.Message.owner_id == current_user.id
+    ).order_by(models.Message.created_at.asc()).all()
+
+    result = []
+    for m in messages:
+        result.append({
+            "role": m.role,
+            "content": m.content,
+            "sources": json.loads(m.sources) if m.sources else [],
+            "created_at": m.created_at,
+        })
+    return result
+
+
 from app.services.embeddings import embed_query
 from app.services.vector_store import query_chunks
 from app.services.llm import generate_answer, reformulate_query, generate_answer_stream
@@ -127,10 +157,13 @@ def chat_with_document(
 
     answer = generate_answer(request_body.question, chunks, history_dicts)
 
+    db.add(models.Message(document_id=document_id, owner_id=current_user.id, role="user", content=request_body.question))
+    db.add(models.Message(document_id=document_id, owner_id=current_user.id, role="assistant", content=answer, sources=json.dumps(chunks)))
+    db.commit()
+
     return {"answer": answer, "sources": chunks}
 
 
-import json
 from fastapi.responses import StreamingResponse
 
 
@@ -164,7 +197,13 @@ def chat_with_document_stream(
 
     def stream():
         yield f"@@SOURCES@@{json.dumps(chunks)}@@ENDSOURCES@@"
+        full_answer = ""
         for text_piece in generate_answer_stream(request_body.question, chunks, history_dicts):
+            full_answer += text_piece
             yield text_piece
+
+        db.add(models.Message(document_id=document_id, owner_id=current_user.id, role="user", content=request_body.question))
+        db.add(models.Message(document_id=document_id, owner_id=current_user.id, role="assistant", content=full_answer, sources=json.dumps(chunks)))
+        db.commit()
 
     return StreamingResponse(stream(), media_type="text/plain")

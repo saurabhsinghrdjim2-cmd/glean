@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { chatWithDocumentStream } from "../api/documents";
+import { chatWithDocumentStream, getMessages } from "../api/documents";
 
 export default function Chat() {
   const { documentId } = useParams();
@@ -9,9 +9,30 @@ export default function Chat() {
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [error, setError] = useState("");
   const [openSources, setOpenSources] = useState({});
   const bottomRef = useRef(null);
+
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const response = await getMessages(documentId);
+        setMessages(
+          response.data.map((m) => ({
+            role: m.role,
+            content: m.content,
+            sources: m.sources,
+          }))
+        );
+      } catch (err) {
+        console.error("Failed to load chat history", err);
+      } finally {
+        setHistoryLoading(false);
+      }
+    };
+    loadHistory();
+  }, [documentId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -104,14 +125,18 @@ export default function Chat() {
       {/* Messages */}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-6 py-8">
-          {messages.length === 0 && (
+          {historyLoading ? (
+            <div className="text-center py-20">
+              <p className="text-text-muted">Loading conversation...</p>
+            </div>
+          ) : messages.length === 0 ? (
             <div className="text-center py-20">
               <h2 className="font-display text-2xl mb-2">Ask this document anything</h2>
               <p className="text-text-muted">
                 Answers are grounded in the document's actual content, with page citations.
               </p>
             </div>
-          )}
+          ) : null}
 
           <div className="space-y-6">
             {messages.map((msg, i) =>

@@ -47,3 +47,11 @@ class SourceChunk(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[SourceChunk]
+class MessageOut(BaseModel):
+    role: str
+    content: str
+    sources: list[SourceChunk] = []
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

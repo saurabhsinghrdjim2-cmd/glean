@@ -29,3 +29,13 @@ class Document(Base):
     status = Column(String, default="processing")  # processing | ready | failed
 
     owner = relationship("User", back_populates="documents")
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    document_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    role = Column(String, nullable=False)  # "user" or "assistant"
+    content = Column(Text, nullable=False)
+    sources = Column(Text, nullable=True)  # JSON string of source chunks
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

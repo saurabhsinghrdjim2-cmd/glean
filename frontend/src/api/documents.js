@@ -68,3 +68,4 @@ export const chatWithDocumentStream = async (documentId, question, history, onSo
     }
   }
 };
+export const getMessages = (documentId) => client.get(`/documents/${documentId}/messages`);
